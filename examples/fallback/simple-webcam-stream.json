@@ -1,0 +1,48 @@
+{
+  "id": "simple-stream-fallback",
+  "reference": "basic-fallback-example",
+  "input": [
+    {
+      "id": "webcam_input",
+      "address": "rtmp://192.168.1.100/live/webcam",
+      "options": ["-f", "flv"],
+      "fallback": {
+        "enabled": true,
+        "failure_threshold_ms": 3000,
+        "recovery_threshold_ms": 5000,
+        "check_interval_ms": 500,
+        "sources": [
+          {
+            "type": "image",
+            "address": "/core/data/fallback/stream_offline.jpg",
+            "options": ["-f", "lavfi", "-loop", "1"],
+            "loop": true
+          }
+        ]
+      }
+    }
+  ],
+  "output": [
+    {
+      "id": "local_hls",
+      "address": "/core/data/hls/stream.m3u8",
+      "options": [
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-b:v", "1000k",
+        "-c:a", "aac",
+        "-b:a", "64k",
+        "-f", "hls",
+        "-hls_time", "6",
+        "-hls_list_size", "10",
+        "-hls_flags", "delete_segments"
+      ]
+    }
+  ],
+  "options": [
+    "-loglevel", "warning"
+  ],
+  "reconnect": true,
+  "reconnect_delay_seconds": 5,
+  "autostart": false
+}

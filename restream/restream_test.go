@@ -79,6 +79,33 @@ func getDummyProcess() *app.Config {
 	}
 }
 
+func getDummyProcessWithFallback() *app.Config {
+	process := getDummyProcess()
+	process.Input[0].Fallback = app.ConfigFallback{
+		Enabled:              true,
+		FailureThreshold:     2000, // 2 seconds
+		SilenceThreshold:     3000, // 3 seconds
+		RecoveryEnabled:      true,
+		RecoveryThreshold:    1000, // 1 second
+		CheckInterval:        500,  // 500ms
+		Sources: []app.ConfigFallbackSource{
+			{
+				Type:    "image",
+				Address: "/tmp/fallback.png",
+				Options: []string{"-f", "lavfi"},
+				Loop:    true,
+			},
+			{
+				Type:    "video",
+				Address: "/tmp/fallback.mp4",
+				Options: []string{"-re"},
+				Loop:    true,
+			},
+		},
+	}
+	return process
+}
+
 func TestAddProcess(t *testing.T) {
 	rs, err := getDummyRestreamer(nil, nil, nil, nil)
 	require.NoError(t, err)
@@ -905,4 +932,90 @@ func TestProcessLimit(t *testing.T) {
 
 	require.Equal(t, float64(61), status.CPU.Limit)
 	require.Equal(t, uint64(42), status.Memory.Limit)
+}
+
+func TestFallbackConfiguration(t *testing.T) {
+	rs, err := getDummyRestreamer(nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	process := getDummyProcessWithFallback()
+
+	err = rs.AddProcess(process)
+	require.NoError(t, err)
+
+	// Verify the process was added with fallback configuration
+	storedProcess, err := rs.GetProcess(process.ID)
+	require.NoError(t, err)
+	require.True(t, storedProcess.Config.Input[0].Fallback.Enabled)
+	require.Len(t, storedProcess.Config.Input[0].Fallback.Sources, 2)
+}
+
+func TestFallbackStatus(t *testing.T) {
+	rs, err := getDummyRestreamer(nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	// Test without fallback
+	process := getDummyProcess()
+	err = rs.AddProcess(process)
+	require.NoError(t, err)
+
+	status, err := rs.GetFallbackStatus(process.ID)
+	require.NoError(t, err)
+	require.Empty(t, status)
+
+	// Test with fallback
+	processWithFallback := getDummyProcessWithFallback()
+	processWithFallback.ID = "process_with_fallback"
+	
+	err = rs.AddProcess(processWithFallback)
+	require.NoError(t, err)
+
+	status, err = rs.GetFallbackStatus(processWithFallback.ID)
+	require.NoError(t, err)
+	require.Contains(t, status, "in")
+	
+	inputStatus, ok := status["in"].(map[string]interface{})
+	require.True(t, ok)
+	require.True(t, inputStatus["enabled"].(bool))
+	require.Equal(t, "unknown", inputStatus["state"].(string))
+	require.False(t, inputStatus["in_fallback"].(bool))
+}
+
+func TestFallbackConfigClone(t *testing.T) {
+	original := app.ConfigIO{
+		ID:      "test",
+		Address: "rtmp://test.com/live",
+		Options: []string{"-f", "flv"},
+		Fallback: app.ConfigFallback{
+			Enabled:              true,
+			FailureThreshold:     5000,
+			SilenceThreshold:     10000,
+			RecoveryEnabled:      true,
+			RecoveryThreshold:    3000,
+			CheckInterval:        1000,
+			Sources: []app.ConfigFallbackSource{
+				{
+					Type:    "image",
+					Address: "/test.png",
+					Options: []string{"-loop", "1"},
+					Loop:    true,
+				},
+			},
+		},
+	}
+
+	cloned := original.Clone()
+
+	// Verify the clone is independent
+	require.Equal(t, original.ID, cloned.ID)
+	require.Equal(t, original.Address, cloned.Address)
+	require.Equal(t, original.Fallback.Enabled, cloned.Fallback.Enabled)
+	require.Equal(t, original.Fallback.FailureThreshold, cloned.Fallback.FailureThreshold)
+	require.Len(t, cloned.Fallback.Sources, 1)
+	require.Equal(t, original.Fallback.Sources[0].Type, cloned.Fallback.Sources[0].Type)
+	require.Equal(t, original.Fallback.Sources[0].Address, cloned.Fallback.Sources[0].Address)
+
+	// Modify original and ensure clone is unaffected
+	original.Fallback.Sources[0].Address = "/modified.png"
+	require.NotEqual(t, original.Fallback.Sources[0].Address, cloned.Fallback.Sources[0].Address)
 }

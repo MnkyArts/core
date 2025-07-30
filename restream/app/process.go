@@ -11,11 +11,31 @@ type ConfigIOCleanup struct {
 	PurgeOnDelete bool   `json:"purge_on_delete"`
 }
 
+// ConfigFallbackSource represents a fallback source configuration
+type ConfigFallbackSource struct {
+	Type     string   `json:"type"`     // "image", "video", "rtmp"
+	Address  string   `json:"address"`  // Path to file or RTMP URL
+	Options  []string `json:"options"`  // FFmpeg options for this fallback source
+	Loop     bool     `json:"loop"`     // Whether to loop video files
+}
+
+// ConfigFallback represents fallback configuration for an input
+type ConfigFallback struct {
+	Enabled              bool                    `json:"enabled"`                 // Enable fallback functionality
+	Sources              []ConfigFallbackSource `json:"sources"`                 // List of fallback sources in priority order
+	FailureThreshold     uint64                  `json:"failure_threshold_ms"`   // Milliseconds before considering stream failed
+	SilenceThreshold     uint64                  `json:"silence_threshold_ms"`   // Milliseconds of silence before fallback
+	RecoveryEnabled      bool                    `json:"recovery_enabled"`       // Whether to automatically return to primary
+	RecoveryThreshold    uint64                  `json:"recovery_threshold_ms"`  // Milliseconds of stable primary before recovery
+	CheckInterval        uint64                  `json:"check_interval_ms"`      // How often to check stream health
+}
+
 type ConfigIO struct {
-	ID      string            `json:"id"`
-	Address string            `json:"address"`
-	Options []string          `json:"options"`
-	Cleanup []ConfigIOCleanup `json:"cleanup"`
+	ID       string            `json:"id"`
+	Address  string            `json:"address"`
+	Options  []string          `json:"options"`
+	Cleanup  []ConfigIOCleanup `json:"cleanup"`
+	Fallback ConfigFallback    `json:"fallback"` // Fallback configuration for inputs
 }
 
 func (io ConfigIO) Clone() ConfigIO {
@@ -29,6 +49,27 @@ func (io ConfigIO) Clone() ConfigIO {
 
 	clone.Cleanup = make([]ConfigIOCleanup, len(io.Cleanup))
 	copy(clone.Cleanup, io.Cleanup)
+
+	// Clone fallback configuration
+	clone.Fallback = ConfigFallback{
+		Enabled:              io.Fallback.Enabled,
+		FailureThreshold:     io.Fallback.FailureThreshold,
+		SilenceThreshold:     io.Fallback.SilenceThreshold,
+		RecoveryEnabled:      io.Fallback.RecoveryEnabled,
+		RecoveryThreshold:    io.Fallback.RecoveryThreshold,
+		CheckInterval:        io.Fallback.CheckInterval,
+	}
+
+	clone.Fallback.Sources = make([]ConfigFallbackSource, len(io.Fallback.Sources))
+	for i, source := range io.Fallback.Sources {
+		clone.Fallback.Sources[i] = ConfigFallbackSource{
+			Type:    source.Type,
+			Address: source.Address,
+			Loop:    source.Loop,
+		}
+		clone.Fallback.Sources[i].Options = make([]string, len(source.Options))
+		copy(clone.Fallback.Sources[i].Options, source.Options)
+	}
 
 	return clone
 }
