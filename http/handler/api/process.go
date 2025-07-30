@@ -585,3 +585,25 @@ func (h *RestreamHandler) getProcess(id, filterString string) (api.Process, erro
 
 	return info, nil
 }
+
+// GetFallbackStatus returns the current fallback status for a process
+// @Summary Get process fallback status
+// @Description Get the current fallback status for all monitored inputs of a process
+// @Tags v16.7.2
+// @ID process-3-fallback-status
+// @Produce json
+// @Param id path string true "Process ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 404 {object} api.Error
+// @Security ApiKeyAuth
+// @Router /api/v3/process/{id}/fallback [get]
+func (h *RestreamHandler) GetFallbackStatus(c echo.Context) error {
+	id := util.PathParam(c, "id")
+
+	status, err := h.restream.GetFallbackStatus(id)
+	if err != nil {
+		return api.Err(http.StatusNotFound, "Unknown process ID", "%s", err)
+	}
+
+	return c.JSON(http.StatusOK, status)
+}
