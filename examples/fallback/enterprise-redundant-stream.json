@@ -1,0 +1,86 @@
+{
+  "id": "redundant-streaming-setup",
+  "reference": "enterprise-fallback",
+  "input": [
+    {
+      "id": "primary_camera",
+      "address": "rtsp://192.168.1.100:554/stream1",
+      "options": ["-rtsp_transport", "tcp"],
+      "fallback": {
+        "enabled": true,
+        "failure_threshold_ms": 2000,
+        "recovery_threshold_ms": 8000,
+        "check_interval_ms": 250,
+        "sources": [
+          {
+            "type": "rtmp",
+            "address": "rtmp://192.168.1.101/live/backup-camera",
+            "options": ["-f", "flv"]
+          },
+          {
+            "type": "video",
+            "address": "/core/data/fallback/emergency_broadcast.mp4",
+            "options": ["-re"],
+            "loop": true
+          },
+          {
+            "type": "image", 
+            "address": "/core/data/fallback/technical_issues.png",
+            "options": ["-f", "lavfi"],
+            "loop": true
+          }
+        ]
+      }
+    }
+  ],
+  "output": [
+    {
+      "id": "primary_cdn",
+      "address": "rtmp://primary-cdn.example.com/live/STREAM_KEY_1",
+      "options": [
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-b:v", "3000k",
+        "-maxrate", "3000k", 
+        "-bufsize", "6000k",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-f", "flv"
+      ]
+    },
+    {
+      "id": "backup_cdn",
+      "address": "rtmp://backup-cdn.example.com/live/STREAM_KEY_2",
+      "options": [
+        "-c:v", "libx264", 
+        "-preset", "medium",
+        "-b:v", "3000k",
+        "-maxrate", "3000k",
+        "-bufsize", "6000k", 
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-f", "flv"
+      ]
+    },
+    {
+      "id": "archive_storage",
+      "address": "/core/data/archive/stream-%Y%m%d-%H%M%S.mp4",
+      "options": [
+        "-c:v", "libx264",
+        "-preset", "slow",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-f", "mp4"
+      ]
+    }
+  ],
+  "options": [
+    "-loglevel", "info",
+    "-thread_queue_size", "1024"
+  ],
+  "reconnect": true,
+  "reconnect_delay_seconds": 10,
+  "autostart": true,
+  "stale_timeout_seconds": 30
+}

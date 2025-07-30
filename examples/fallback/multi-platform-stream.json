@@ -1,0 +1,89 @@
+{
+  "id": "live-stream-with-fallback",
+  "reference": "live-stream-example",
+  "input": [
+    {
+      "id": "primary_rtmp",
+      "address": "rtmp://localhost:1935/live/stream",
+      "options": ["-f", "flv"],
+      "fallback": {
+        "enabled": true,
+        "failure_threshold_ms": 5000,
+        "silence_threshold_ms": 10000,
+        "recovery_enabled": true,
+        "recovery_threshold_ms": 10000,
+        "check_interval_ms": 1000,
+        "sources": [
+          {
+            "type": "image",
+            "address": "/core/data/fallback/technical_difficulties.png",
+            "options": ["-f", "lavfi"],
+            "loop": true
+          },
+          {
+            "type": "video",
+            "address": "/core/data/fallback/standby_loop.mp4",
+            "options": ["-re", "-stream_loop", "-1"],
+            "loop": true
+          },
+          {
+            "type": "rtmp",
+            "address": "rtmp://backup.example.com/live/backup-stream",
+            "options": ["-f", "flv"]
+          }
+        ]
+      }
+    }
+  ],
+  "output": [
+    {
+      "id": "youtube",
+      "address": "rtmp://a.rtmp.youtube.com/live2/YOUR_STREAM_KEY_HERE",
+      "options": [
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-b:v", "2500k",
+        "-maxrate", "2500k",
+        "-bufsize", "5000k",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-f", "flv"
+      ]
+    },
+    {
+      "id": "twitch",
+      "address": "rtmp://live.twitch.tv/live/YOUR_STREAM_KEY_HERE", 
+      "options": [
+        "-c:v", "libx264",
+        "-preset", "veryfast", 
+        "-b:v", "2500k",
+        "-maxrate", "2500k",
+        "-bufsize", "5000k",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-f", "flv"
+      ]
+    },
+    {
+      "id": "kick",
+      "address": "rtmp://ingest.kick.com/live/YOUR_STREAM_KEY_HERE",
+      "options": [
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-b:v", "2500k", 
+        "-maxrate", "2500k",
+        "-bufsize", "5000k",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-f", "flv"
+      ]
+    }
+  ],
+  "options": [
+    "-loglevel", "info",
+    "-err_detect", "ignore_err"
+  ],
+  "reconnect": true,
+  "reconnect_delay_seconds": 15,
+  "autostart": true
+}

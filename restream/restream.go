@@ -21,6 +21,7 @@ import (
 	"github.com/datarhei/core/v16/net/url"
 	"github.com/datarhei/core/v16/process"
 	"github.com/datarhei/core/v16/restream/app"
+	"github.com/datarhei/core/v16/restream/fallback"
 	rfs "github.com/datarhei/core/v16/restream/fs"
 	"github.com/datarhei/core/v16/restream/replace"
 	"github.com/datarhei/core/v16/restream/store"
@@ -55,6 +56,7 @@ type Restreamer interface {
 	GetProcessMetadata(id, key string) (interface{}, error)      // Get previously set metadata from a process
 	SetMetadata(key string, data interface{}) error              // Set general metadata
 	GetMetadata(key string) (interface{}, error)                 // Get previously set general metadata
+	GetFallbackStatus(id string) (map[string]interface{}, error) // Get fallback status for a process
 }
 
 // Config is the required configuration for a new restreamer instance.
@@ -82,6 +84,9 @@ type task struct {
 	logger    log.Logger
 	usesDisk  bool // Whether this task uses the disk
 	metadata  map[string]interface{}
+	
+	// Fallback monitoring
+	fallbackMonitors map[string]*fallback.Monitor // Map from input ID to fallback monitor
 }
 
 type restream struct {
@@ -287,11 +292,12 @@ func (r *restream) load() error {
 		}
 
 		t := &task{
-			id:        id,
-			reference: process.Reference,
-			process:   process,
-			config:    process.Config.Clone(),
-			logger:    r.logger.WithField("id", id),
+			id:               id,
+			reference:        process.Reference,
+			process:          process,
+			config:           process.Config.Clone(),
+			logger:           r.logger.WithField("id", id),
+			fallbackMonitors: make(map[string]*fallback.Monitor),
 		}
 
 		// Replace all placeholders in the config
@@ -368,6 +374,12 @@ func (r *restream) load() error {
 
 		t.ffmpeg = ffmpeg
 		t.valid = true
+
+		// Set up fallback monitoring for loaded tasks
+		err = r.setupFallbackMonitoring(t)
+		if err != nil {
+			r.logger.Warn().WithField("id", t.id).WithError(err).Log("Failed to setup fallback monitoring, ignoring")
+		}
 	}
 
 	r.tasks = tasks
@@ -466,11 +478,12 @@ func (r *restream) createTask(config *app.Config) (*task, error) {
 	}
 
 	t := &task{
-		id:        config.ID,
-		reference: process.Reference,
-		process:   process,
-		config:    process.Config.Clone(),
-		logger:    r.logger.WithField("id", process.ID),
+		id:               config.ID,
+		reference:        process.Reference,
+		process:          process,
+		config:           process.Config.Clone(),
+		logger:           r.logger.WithField("id", process.ID),
+		fallbackMonitors: make(map[string]*fallback.Monitor),
 	}
 
 	resolvePlaceholders(t.config, r.replace)
@@ -510,6 +523,12 @@ func (r *restream) createTask(config *app.Config) (*task, error) {
 
 	t.ffmpeg = ffmpeg
 	t.valid = true
+
+	// Set up fallback monitoring for inputs that have fallback configuration
+	err = r.setupFallbackMonitoring(t)
+	if err != nil {
+		return nil, fmt.Errorf("failed to setup fallback monitoring: %w", err)
+	}
 
 	return t, nil
 }
@@ -1021,6 +1040,9 @@ func (r *restream) deleteProcess(id string) error {
 	r.unsetPlayoutPorts(task)
 	r.unsetCleanup(id)
 
+	// Stop fallback monitoring
+	r.stopFallbackMonitoring(task)
+
 	delete(r.tasks, id)
 
 	return nil
@@ -1064,6 +1086,11 @@ func (r *restream) startProcess(id string) error {
 
 	task.ffmpeg.Start()
 
+	// Start fallback monitoring for this process
+	for _, monitor := range task.fallbackMonitors {
+		monitor.Start()
+	}
+
 	r.nProc++
 
 	return nil
@@ -1102,6 +1129,9 @@ func (r *restream) stopProcess(id string) error {
 	task.process.Order = "stop"
 
 	task.ffmpeg.Stop(true)
+
+	// Stop fallback monitoring for this process
+	r.stopFallbackMonitoring(task)
 
 	r.nProc--
 
@@ -1247,6 +1277,9 @@ func (r *restream) GetProcessState(id string) (*app.State, error) {
 	}
 
 	state.Progress = task.parser.Progress()
+
+	// Update fallback health with current progress
+	r.updateFallbackHealth(task)
 
 	for i, p := range state.Progress.Input {
 		if int(p.Index) >= len(task.process.Config.Input) {
@@ -1514,6 +1547,35 @@ func (r *restream) GetMetadata(key string) (interface{}, error) {
 	return data, nil
 }
 
+func (r *restream) GetFallbackStatus(id string) (map[string]interface{}, error) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	task, ok := r.tasks[id]
+	if !ok {
+		return nil, ErrUnknownProcess
+	}
+
+	status := make(map[string]interface{})
+	
+	for inputID, monitor := range task.fallbackMonitors {
+		health := monitor.GetHealth()
+		
+		status[inputID] = map[string]interface{}{
+			"enabled":                 true,
+			"state":                   health.State.String(),
+			"last_seen":               health.LastSeen.Unix(),
+			"last_failure":            health.LastFailure.Unix(),
+			"failure_duration_ms":     health.FailureDuration.Milliseconds(),
+			"consecutive_failures":    health.ConsecutiveFailures,
+			"in_fallback":             health.InFallback,
+			"current_fallback_index":  health.CurrentFallbackIndex,
+		}
+	}
+
+	return status, nil
+}
+
 // resolvePlaceholders replaces all placeholders in the config. The config
 // will be modified in place.
 func resolvePlaceholders(config *app.Config, r replace.Replacer) {
@@ -1605,5 +1667,73 @@ func resolvePlaceholders(config *app.Config, r replace.Replacer) {
 		delete(vars, "outputid")
 
 		config.Output[i] = output
+	}
+}
+
+// setupFallbackMonitoring sets up fallback monitoring for inputs that have fallback configuration
+func (r *restream) setupFallbackMonitoring(t *task) error {
+	for _, input := range t.config.Input {
+		if !input.Fallback.Enabled {
+			continue
+		}
+
+		if len(input.Fallback.Sources) == 0 {
+			t.logger.Warn().WithField("input_id", input.ID).Log("Fallback enabled but no sources configured")
+			continue
+		}
+
+		monitor, err := fallback.New(fallback.Config{
+			InputID:        input.ID,
+			FallbackConfig: &input.Fallback,
+			FFmpeg:         r.ffmpeg,
+			Logger:         t.logger,
+			OnFallbackSwitch: func(inputID string, fallbackIndex int, source *app.ConfigFallbackSource) {
+				t.logger.Info().WithFields(log.Fields{
+					"input_id":       inputID,
+					"fallback_index": fallbackIndex,
+					"source_type":    source.Type,
+					"source_address": source.Address,
+				}).Log("Switched to fallback source")
+			},
+			OnRecovery: func(inputID string) {
+				t.logger.Info().WithField("input_id", inputID).Log("Recovered to primary stream")
+			},
+			OnFailure: func(inputID string, reason string) {
+				t.logger.Warn().WithFields(log.Fields{
+					"input_id": inputID,
+					"reason":   reason,
+				}).Log("Stream failure detected")
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create fallback monitor for input %s: %w", input.ID, err)
+		}
+
+		t.fallbackMonitors[input.ID] = monitor
+		t.logger.Info().WithField("input_id", input.ID).Log("Fallback monitoring configured")
+	}
+
+	return nil
+}
+
+// stopFallbackMonitoring stops all fallback monitors for a task
+func (r *restream) stopFallbackMonitoring(t *task) {
+	for inputID, monitor := range t.fallbackMonitors {
+		monitor.Stop()
+		t.logger.Debug().WithField("input_id", inputID).Log("Stopped fallback monitoring")
+	}
+	t.fallbackMonitors = make(map[string]*fallback.Monitor)
+}
+
+// updateFallbackHealth updates fallback monitors with current progress
+func (r *restream) updateFallbackHealth(t *task) {
+	if t.parser == nil {
+		return
+	}
+
+	progress := t.parser.Progress()
+	
+	for _, monitor := range t.fallbackMonitors {
+		monitor.UpdateHealth(progress)
 	}
 }
